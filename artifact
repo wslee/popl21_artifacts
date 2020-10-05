@@ -75,12 +75,12 @@ def run_solver(args, f, solver="duet"):
     cmd += ' tests/' + args.cmd + '/' + f + ')'
     start_time = time.time()
     output = subprocess.getoutput(cmd)
+    sol = ""
     if output is "":
         iters = ""
         output = ""
     else:
         lines = output.split('\n')
-        sol = ""
         for line in lines:
             if 'define-fun' in line: sol = line
     with open('out/' + args.cmd + '/' + f + '.' + solver + '.sol', 'w') as out_file:

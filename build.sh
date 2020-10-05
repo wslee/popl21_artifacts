@@ -5,6 +5,7 @@ cd duet && ./build && cd ..
 # extract benchmarks
 cp -R duet/tests . 
 # build euphony & eusolver
-cd euphony && ./build && cd .. 
+cd euphony 
+. bin/setenv && ./build && cd .. 
 # build CVC4
 tar -xvzf CVC4.tar.gz
