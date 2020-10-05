@@ -1,2 +1,0 @@
-#!/bin/bash
-$CVC_HOME/cvc4 --lang=smt2 $1
