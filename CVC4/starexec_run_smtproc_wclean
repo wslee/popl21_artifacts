@@ -1,0 +1,8 @@
+#!/bin/bash
+
+sed  's|[0-9]*.[0-9]*/[0-9]*.[0-9]*| |' < $1 > notimestamps
+
+ sed 's|EOF| |' < notimestamps > cleaned
+
+
+$CVC_HOME/cvc4 --lang=smt2 cleaned

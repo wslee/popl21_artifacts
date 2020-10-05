@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+
+import argparse
+import logging
+import logging.handlers
+import os
+import subprocess
+import time
+
+# test benchmarks for Table 2 in the paper
+bitvec_test = [
+    "113_10.sl", "116_1000.sl", "icfp_gen_10.1.sl", "icfp_gen_12.18.sl", "10_1000.sl", "100_1000.sl", "146_1000.sl",
+    "icfp_gen_15.13", "12_10.sl", "65_10.sl"
+]
+
+circuit_test = [
+    "CrCy_10-sbox2-D5-sIn102.sl", "CrCy_10-sbox2-D5-sIn104.sl", "CrCy_10-sbox2-D5-sIn14.sl",
+    "CrCy_8-P12-D9-sIn1.sl", "CrCy_8-P12-D9-sIn3.sl", "avg-opt-new.eqn_sygus_iter_59_4.sl",
+    "avg-opt-new.eqn_sygus_iter_50_2.sl", "hd02.eqn_sygus_iter_19_2.sl",
+    "sorting_naive.eqn_sygus_iter_319_2.sl", "insertion-3input.eqn_sygus_iter_24_1.sl"
+]
+
+string_test = [
+    "stackoverflow1.sl", "stackoverflow2.sl", "stackoverflow3.sl", "stackoverflow4.sl",
+    "exceljet1.sl", "exceljet2.sl", "exceljet3.sl", "exceljet4.sl",
+    "phone-10-long-repeat.sl", "phone-9-long-repeat.sl"
+]
+
+def is_valid(f):
+    return \
+        f.startswith('exceljet') \
+        or f.startswith('stackoverflow') \
+        or (f in string_test) \
+        or (f in bitvec_test) \
+        or (f in circuit_test)
+
+def count_example(args, f):
+    # if args.cmd == "circuit":
+    #     example_count_base_cmd = 'head -1 euphony-out/' + args.cmd + '/'
+    #     example_count_cmd = example_count_base_cmd + f + '.euphony.iter'
+    # else:
+    example_count_base_cmd = 'grep \"constraint\" benchmarks/' + args.cmd + '/test/'
+    example_count_cmd = example_count_base_cmd + f + ' | wc -l'
+    try:
+        return int(subprocess.getoutput(example_count_cmd))
+    except:
+        return -1
+
+def run_solver(args, f, solver="duet"):
+    memory_in_kb = args.memory * 1024 * 1024
+    if solver == "duet":
+        if args.cmd == "string":
+            solver_cmd = "./duet/main.native -max_size 400 -lbu "
+        elif args.cmd == "bitvec":
+            solver_cmd = "./duet/main.native -max_size 10000 -fastdt -ex_all -init_comp_size 3 "
+        else: # circuit
+            solver_cmd = "./duet/main.native -max_size 128 -max_height 16  "
+    elif solver == "eusolver":
+        if args.cmd == "string":
+            solver_cmd = "./euphony/bin/run_string_eusolver"
+        elif args.cmd == "bitvec":
+            solver_cmd = "./euphony/bin/run_bitvec_eusolver"
+        else: # circuit
+            solver_cmd = "./euphony/bin/run_circuit_eusolver"
+    else: # "cvc4":
+        if args.cmd == "string":
+            solver_cmd = "./CVC4/starexec_run_sygus_c_PBE_Strings "
+        elif args.cmd == "bitvec":
+            solver_cmd = "./CVC4/starexec_run_sygus_c_PBE_BitVec"
+        else: # circuit
+            solver_cmd = "./CVC4/starexec_run_sygus_c_GENERAL"
+
+    cmd = '(ulimit -v ' + str(memory_in_kb) + '; timeout ' + str(args.timeout) + ' ' + solver_cmd
+
+    cmd += ' tests/' + args.cmd + '/' + f + ')'
+    start_time = time.time()
+    output = subprocess.getoutput(cmd)
+    if output is "":
+        iters = ""
+        output = ""
+    else:
+        lines = output.split('\n')
+        sol = ""
+        for line in lines:
+            if 'define-fun' in line: sol = line
+    with open('out/' + args.cmd + '/' + f + '.' + solver + '.sol', 'w') as out_file:
+        out_file.write(sol)
+    elapsed_time = time.time() - start_time
+    return elapsed_time
+
+def count_ast(args, f, solver="euphony"):
+    ast_count_base_cmd = './duet/main.native -get_size ' + 'out/' + args.cmd + '/'
+    ast_count_cmd = ast_count_base_cmd + f + '.' + solver + '.sol'
+    out = subprocess.getoutput(ast_count_cmd)
+    try:
+        return int(subprocess.getoutput(ast_count_cmd))
+    except:
+        return -1
+
+def print_header(args):
+    # if args.cmd == "circuit":
+    #     E = "#Iter"
+    # else:
+    E = "|E|"
+    print("-" * 120)
+
+    if args.only_duet:
+        print("  %54s " % ("DUET"))
+        print("  %-30s %8s %8s %8s " %
+              (args.cmd.capitalize() + " Benchmarks", E, "|P|", "Time"))
+        print("-" * 120)
+    else:
+        print("  %54s %18s %18s" % ("DUET", "EUSOLVER", "CVC4"))
+        print("  %-30s %8s %8s %8s %8s %8s %8s %8s" %
+              (args.cmd.capitalize() + " Benchmarks", E, "|P|", "Time", "|P|", "Time", "|P|", "Time"))
+        print("-" * 120)
+
+def run(args, logger):
+    os.makedirs('out/' + args.cmd, 0o755, True)
+    inputs = [ f for f in os.listdir('tests/' + args.cmd) \
+               if f.endswith('.sl')]
+    inputs = [ f for f in inputs if is_valid(f) ]
+    inputs = sorted(inputs)
+
+    print_header(args)
+    for f in inputs:
+        elapsed_time_duet = run_solver(args, f)
+        if not args.only_duet:
+            elapsed_time_eusolver = run_solver(args, f, "eusolver")
+            P_eusolver = count_ast(args, f, "eusolver")
+            elapsed_time_cvc4 = run_solver(args, f, "cvc4")
+            P_cvc4 = count_ast(args, f, "cvc4")
+        E = count_example(args, f)
+        P_duet = count_ast(args, f)
+        if args.only_duet:
+            print("  %-30s %8d %8d %8.1f" %
+                  (f, E, P_duet, elapsed_time_duet))
+        else:
+            print("  %-30s %8d %8d %8.1f %8d %8.1f %8d %8.1f" %
+                  (f, E, P_duet, elapsed_time_duet,
+                   P_eusolver, elapsed_time_eusolver,
+                   P_cvc4, elapsed_time_cvc4))
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="cmd")
+    subparser = subparsers.add_parser("string", help="Run the String Benchmark Programs")
+    subparser.add_argument("--timeout", type = int, default = 3600)
+    subparser.add_argument("--memory", type = int, default = 8)
+    subparser.add_argument("--only_duet", action="store_true", default = False)
+    subparser = subparsers.add_parser("bitvec", help="Run the Bitvec Benchmark Programs")
+    subparser.add_argument("--timeout", type = int, default = 3600)
+    subparser.add_argument("--memory", type = int, default = 8)
+    subparser.add_argument("--only_duet", action="store_true", default = False)
+    subparser = subparsers.add_parser("circuit", help="Run the Circuit Benchmark Programs")
+    subparser.add_argument("--timeout", type = int, default = 3600)
+    subparser.add_argument("--memory", type = int, default = 8)
+    subparser.add_argument("--only_duet", action="store_true", default = False)
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    logger = logging.getLogger('logger')
+    formatter = logging.Formatter('[%(levelname)s] %(asctime)s > %(message)s')
+    fileHandler = logging.FileHandler('./log')
+    streamHandler = logging.StreamHandler()
+    fileHandler.setFormatter(formatter)
+    streamHandler.setFormatter(formatter)
+    logger.addHandler(fileHandler)
+    logger.addHandler(streamHandler)
+    logger.setLevel(logging.DEBUG)
+
+    if args.cmd in [ "string", "bitvec", "circuit"]:
+        run(args, logger)
+    else:
+        print("Invalid Argument")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,3 @@
+export EUPHONY_HOME=`pwd`/euphony
+export LD_LIBRARY_PATH=$EUPHONY_HOME/thirdparty/z3/build/python:$LD_LIBRARY_PATH
+export CVC_HOME=`pwd`/CVC4
