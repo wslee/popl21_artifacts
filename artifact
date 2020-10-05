@@ -27,12 +27,7 @@ string_test = [
 ]
 
 def is_valid(f):
-    return \
-        f.startswith('exceljet') \
-        or f.startswith('stackoverflow') \
-        or (f in string_test) \
-        or (f in bitvec_test) \
-        or (f in circuit_test)
+    return (f in string_test) or (f in bitvec_test) or (f in circuit_test)
 
 def count_example(args, f):
     # if args.cmd == "circuit":
