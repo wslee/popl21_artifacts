@@ -39,7 +39,7 @@ def count_example(args, f):
     #     example_count_base_cmd = 'head -1 euphony-out/' + args.cmd + '/'
     #     example_count_cmd = example_count_base_cmd + f + '.euphony.iter'
     # else:
-    example_count_base_cmd = 'grep \"constraint\" benchmarks/' + args.cmd + '/test/'
+    example_count_base_cmd = 'grep \"constraint\" tests/' + args.cmd + '/'
     example_count_cmd = example_count_base_cmd + f + ' | wc -l'
     try:
         return int(subprocess.getoutput(example_count_cmd))
@@ -88,12 +88,12 @@ def run_solver(args, f, solver="duet"):
     elapsed_time = time.time() - start_time
     return elapsed_time
 
-def count_ast(args, f, solver="euphony"):
+def count_ast(args, f, solver="duet"):
     ast_count_base_cmd = './duet/main.native -get_size ' + 'out/' + args.cmd + '/'
     ast_count_cmd = ast_count_base_cmd + f + '.' + solver + '.sol'
     out = subprocess.getoutput(ast_count_cmd)
     try:
-        return int(subprocess.getoutput(ast_count_cmd))
+        return int(out)
     except:
         return -1
 
