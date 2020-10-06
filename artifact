@@ -55,6 +55,12 @@ def count_example(args, f):
         return -1
 
 def run_solver(args, f, solver="duet"):
+    prefix = 'out/' + args.cmd + '/' + f + '.' + solver
+
+    solfilename = prefix + '.sol'
+    timefilename = prefix + '.time'
+    sizefilename = prefix + '.size'
+
     memory_in_kb = args.memory * 1024 * 1024
     if solver == "duet":
         if args.cmd == "string":
@@ -86,28 +92,43 @@ def run_solver(args, f, solver="duet"):
             solver_cmd = "./euphony/bin/run_circuit"
 
     cmd = '(ulimit -v ' + str(memory_in_kb) + '; timeout ' + str(args.timeout) + ' ' + solver_cmd
-
     cmd += ' tests/' + args.cmd + '/' + f + ')'
-    start_time = time.time()
-    output = subprocess.getoutput(cmd)
-    sol = ""
-    if output is "":
-        iters = ""
-        output = ""
-    else:
-        lines = output.split('\n')
-        for line in lines:
-            if 'define-fun' in line: sol = line
-    with open('out/' + args.cmd + '/' + f + '.' + solver + '.sol', 'w') as out_file:
-        out_file.write(sol)
-    elapsed_time = time.time() - start_time
-    with open('out/' + args.cmd + '/' + f + '.' + solver + '.time', 'w') as out_file:
-        out_file.write(str(elapsed_time))
-    return elapsed_time
+
+    try:
+        file = open(timefilename, 'r')
+        elapsed_time = float([line.strip() for line in file][0])
+        # print(elapsed_time)
+        return elapsed_time
+    except:
+        start_time = time.time()
+        output = subprocess.getoutput(cmd)
+        sol = ""
+        if output is "":
+            elapsed_time = args.timeout
+        else:
+            lines = output.split('\n')
+            for line in lines:
+                if 'define-fun' in line: sol = line
+            elapsed_time = time.time() - start_time
+
+        with open(solfilename, 'w') as out_file:
+            out_file.write(sol)
+        with open(timefilename, 'w') as out_file:
+            out_file.write(str(elapsed_time))
+        with open(sizefilename, 'w') as out_file:
+            # print('size ', str(count_ast(args, f, solver)))
+            out_file.write(str(count_ast(args, f, solver)))
+        return elapsed_time
+
 
 def count_ast(args, f, solver="duet"):
-    solfile = 'out/' + args.cmd + '/' + f + '.' + solver + '.sol'
-    if os.path.isfile(solfile):
+    prefix = 'out/' + args.cmd + '/' + f + '.' + solver
+    solfile = prefix + '.sol'
+    sizefile = prefix + '.size'
+    if os.path.isfile(sizefile) and os.path.getsize(sizefile) > 0:
+        with open(sizefile, 'r') as file:
+            return int([line.strip() for line in file][0])
+    elif os.path.isfile(solfile):
         ast_count_cmd = './duet/main.native -get_size ' + solfile
         out = subprocess.getoutput(ast_count_cmd)
         try:
