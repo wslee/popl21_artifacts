@@ -1,7 +1,7 @@
 git clone https://github.com/wslee/duet.git
 git clone https://github.com/wslee/euphony.git
 # build duet 
-cd duet && ./build && cd ..
+cd duet && ./build && make && cd ..
 # extract benchmarks
 cp -R duet/tests . 
 # build euphony & eusolver
