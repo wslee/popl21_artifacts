@@ -6,11 +6,13 @@ import logging.handlers
 import os
 import subprocess
 import time
+from multiprocessing import Pool
+import statistics
 
 # test benchmarks for Table 2 in the paper
 bitvec_test = [
     "113_10.sl", "116_1000.sl", "icfp_gen_10.1.sl", "icfp_gen_12.18.sl", "10_1000.sl", "100_1000.sl", "146_1000.sl",
-    "icfp_gen_15.13", "12_10.sl", "65_10.sl"
+    "icfp_gen_15.13.sl", "12_10.sl", "65_10.sl"
 ]
 
 circuit_test = [
@@ -25,6 +27,17 @@ string_test = [
     "exceljet1.sl", "exceljet2.sl", "exceljet3.sl", "exceljet4.sl",
     "phone-10-long-repeat.sl", "phone-9-long-repeat.sl"
 ]
+
+def get_partitions(bench_files, n_process):
+    subset_size = int(len(bench_files) / n_process)
+    result = []
+    for i in range(n_process):
+        if i == n_process - 1:
+            fold = bench_files[i * subset_size:]
+        else:
+            fold = bench_files[i * subset_size:][:subset_size]
+        result.append(fold)
+    return result
 
 def is_valid(f):
     return (f in string_test) or (f in bitvec_test) or (f in circuit_test)
@@ -57,13 +70,20 @@ def run_solver(args, f, solver="duet"):
             solver_cmd = "./euphony/bin/run_bitvec_eusolver"
         else: # circuit
             solver_cmd = "./euphony/bin/run_circuit_eusolver"
-    else: # "cvc4":
+    elif solver == "cvc4":
         if args.cmd == "string":
             solver_cmd = "./CVC4/starexec_run_sygus_c_PBE_Strings "
         elif args.cmd == "bitvec":
             solver_cmd = "./CVC4/starexec_run_sygus_c_PBE_BitVec"
         else: # circuit
             solver_cmd = "./CVC4/starexec_run_sygus_c_GENERAL"
+    else: # euphony
+        if args.cmd == "string":
+            solver_cmd = "./euphony/bin/run_string"
+        elif args.cmd == "bitvec":
+            solver_cmd = "./euphony/bin/run_bitvec"
+        else: # circuit
+            solver_cmd = "./euphony/bin/run_circuit"
 
     cmd = '(ulimit -v ' + str(memory_in_kb) + '; timeout ' + str(args.timeout) + ' ' + solver_cmd
 
@@ -81,16 +101,34 @@ def run_solver(args, f, solver="duet"):
     with open('out/' + args.cmd + '/' + f + '.' + solver + '.sol', 'w') as out_file:
         out_file.write(sol)
     elapsed_time = time.time() - start_time
+    with open('out/' + args.cmd + '/' + f + '.' + solver + '.time', 'w') as out_file:
+        out_file.write(str(elapsed_time))
     return elapsed_time
 
 def count_ast(args, f, solver="duet"):
-    ast_count_base_cmd = './duet/main.native -get_size ' + 'out/' + args.cmd + '/'
-    ast_count_cmd = ast_count_base_cmd + f + '.' + solver + '.sol'
-    out = subprocess.getoutput(ast_count_cmd)
-    try:
-        return int(out)
-    except:
+    solfile = 'out/' + args.cmd + '/' + f + '.' + solver + '.sol'
+    if os.path.isfile(solfile):
+        ast_count_cmd = './duet/main.native -get_size ' + solfile
+        out = subprocess.getoutput(ast_count_cmd)
+        try:
+            return int(out)
+        except:
+            return -1
+    else:
         return -1
+
+
+def count_time(category, f, solver="duet"):
+    runtime = -1.0
+    try:
+        logFile = open('out/' + category + '/' + f + '.' + solver + '.time', 'r')
+    except:
+        return runtime
+    lines = [line.strip() for line in logFile]
+    for line in lines:
+        runtime = float(line)
+    return runtime
+
 
 def print_header(args):
     # if args.cmd == "circuit":
@@ -110,8 +148,49 @@ def print_header(args):
               (args.cmd.capitalize() + " Benchmarks", E, "|P|", "Time", "|P|", "Time", "|P|", "Time"))
         print("-" * 120)
 
-def run(args, logger):
+def already_done(args, b, s):
+    size = count_ast(args, b, s)
+    return size is not -1
+
+def run_batch(args):
+    solvers = ["duet", "eusolver", "cvc4", 'euphony']
+    testset = []
+    with open('testlist_string', 'r') as list_file:
+        testset.extend([line.strip() for line in list_file])
+    with open('testlist_bitvec', 'r') as list_file:
+        testset.extend([line.strip() for line in list_file])
+    with open('testlist_circuit', 'r') as list_file:
+        testset.extend([line.strip() for line in list_file])
+
     os.makedirs('out/' + args.cmd, 0o755, True)
+    benchmarks = [f for f in os.listdir('tests/' + args.cmd) \
+              if f.endswith('.sl')]
+
+    pool = Pool(args.n_process)
+    result_pool = []
+    for s in solvers:
+        for b in benchmarks:
+            if already_done(args, b, s) or (s == 'euphony' and b not in testset) : continue
+            else:
+                result = pool.apply_async(run_solver, [args, b, s])
+                result_pool.append((s, b, result))
+    pool.close()
+    try:
+        pool.join()
+    except KeyboardInterrupt:
+        print("Exiting prematurely, waiting for last round results...")
+        print("Ctrl-C again to force quit")
+        pool.terminate()
+        try:
+            pool.join()
+        except KeyboardInterrupt:
+            print("Force quitting... Solver processes may be orphaned")
+
+
+
+def run(args):
+    if not os.path.exists('out/' + args.cmd):
+        os.makedirs('out/' + args.cmd, 0o755, True)
     inputs = [ f for f in os.listdir('tests/' + args.cmd) \
                if f.endswith('.sl')]
     inputs = [ f for f in inputs if is_valid(f) ]
@@ -136,39 +215,281 @@ def run(args, logger):
                    P_eusolver, elapsed_time_eusolver,
                    P_cvc4, elapsed_time_cvc4))
 
+def mean_str(v):
+    try:
+        return '%7.1f' % statistics.mean(v)
+    except:
+        return 'N/A'
+
+def median_str(v):
+    try:
+        return '%7.1f' % statistics.median(v)
+    except:
+        return 'N/A'
+
+
+def print_stat(args):
+    solvers = ["duet", "eusolver", "cvc4"]
+    categories = ['string', 'bitvec', 'circuit']
+
+    string_benchmarks = [f for f in os.listdir('tests/string') if f.endswith('.sl')]
+    bitvec_benchmarks = [f for f in os.listdir('tests/bitvec') if f.endswith('.sl')]
+    circuit_benchmarks = [f for f in os.listdir('tests/circuit') if f.endswith('.sl')]
+
+    benchmarks = []
+    benchmarks.extend(string_benchmarks)
+    benchmarks.extend(bitvec_benchmarks)
+    benchmarks.extend(circuit_benchmarks)
+
+    # solver * category -> size list
+    size_map = {}
+    # solver * category -> time list
+    time_map = {}
+
+    # solver -> # fastest bench
+    fastest = {}
+
+    for s in solvers:
+        for c in categories:
+            fastest[(s, c)] = 0
+            size_map[(s, c)] = []
+            time_map[(s, c)] = []
+
+    for s in solvers:
+        for c in categories:
+            for b in benchmarks:
+                args.cmd = c
+                if already_done(args, b, s):
+                    size_map[(s, c)].append(count_ast(args, b, s))
+                    time_map[(s, c)].append(count_time(c, b, s))
+                else:
+                    size_map[(s, c)].append(-1)
+                    time_map[(s, c)].append(3600.0)
+
+    # compute num of fastest solved benchmarks
+    for c in categories:
+        for i in range(0, len(time_map[('duet', c)])):
+            min_time = min([time_map[(s, c)][i] for s in solvers])
+            if min_time == 3600.0: continue
+
+            if min_time == time_map[('duet', c)][i]:
+                fastest[('duet', c)] = fastest[('duet', c)] + 1
+            elif min_time == time_map[('cvc4', c)][i]:
+                fastest[('cvc4', c)] = fastest[('cvc4', c)] + 1
+            else: # eusolver
+                fastest[('eusolver', c)] = fastest[('eusolver', c)] + 1
+
+    # remove results of timeout
+
+    for s in solvers:
+        for c in categories:
+            size_map[(s, c)] = [s for s in size_map[(s, c)] if s != -1]
+            time_map[(s, c)] = [t for t in time_map[(s, c)] if t != 3600.0]
+
+    print("# Solved Benchmarks" )
+    print("-" * 120)
+    print("%8s %8s %8s %8s %8s" % ("Domain", "Total", "Duet", "CVC4", "EUSolver") )
+    for c in categories:
+        print("%8s %8d %8d %8d %8d" % (c,
+                                   len(string_benchmarks) if c == 'string' else len(bitvec_benchmarks) if c == 'bitvec' else len(circuit_benchmarks),
+                                   len([s for s in size_map[('duet', c)] if s != -1]),
+                                   len([s for s in size_map[('cvc4', c)] if s != -1]),
+                                   len([s for s in size_map[('eusolver', c)] if s != -1])))
+    print("-" * 120)
+
+    print("# Fastest Benchmarks" )
+    print("-" * 120)
+    print("%8s %8s %8s %8s" % ("Domain", "Duet", "CVC4", "EUSolver"))
+    for c in categories:
+        print("%8s %8d %8d %8d" % (c, fastest[('duet', c)], fastest[('cvc4', c)], fastest[('eusolver', c)]))
+    print("-" * 120)
+
+
+
+    print("Synthesis Time (average, median)")
+    print("-" * 120)
+    print("%8s %17s %17s %17s" % ("Domain", "Duet", "CVC4", "EUSolver"))
+    for c in categories:
+        print("%8s %8s %8s %8s %8s %8s %8s" % (c,
+                                               mean_str(time_map[('duet', c)]),
+                                               median_str(time_map[('duet', c)]),
+                                               mean_str(time_map[('cvc4', c)]),
+                                               median_str(time_map[('cvc4', c)]),
+                                               mean_str(time_map[('eusolver', c)]),
+                                               median_str(time_map[('eusolver', c)])
+                                               ))
+    print("-" * 120)
+
+    print("Solution Size (average, median)")
+    print("-" * 120)
+    print("%8s %17s %17s %17s" % ("Domain", "Duet", "CVC4", "EUSolver"))
+    for c in categories:
+        print("%8s %8s %8s %8s %8s %8s %8s" % (c,
+                                               mean_str(size_map[('duet', c)]),
+                                               median_str(size_map[('duet', c)]),
+                                               mean_str(size_map[('cvc4', c)]),
+                                               median_str(size_map[('cvc4', c)]),
+                                               mean_str(size_map[('eusolver', c)]),
+                                               median_str(size_map[('eusolver', c)])
+                                               ))
+    print("-" * 120)
+
+
+
+def print_stat_euphony(args):
+    solvers = ['duet', 'euphony']
+    categories = ['string', 'bitvec', 'circuit']
+
+    with open('testlist_string', 'r') as list_file:
+        string_benchmarks = [line.strip() for line in list_file]
+    with open('testlist_bitvec', 'r') as list_file:
+        bitvec_benchmarks = [line.strip() for line in list_file]
+    with open('testlist_circuit', 'r') as list_file:
+        circuit_benchmarks = [line.strip() for line in list_file]
+
+    benchmarks = []
+    benchmarks.extend(string_benchmarks)
+    benchmarks.extend(bitvec_benchmarks)
+    benchmarks.extend(circuit_benchmarks)
+
+    # solver * category -> size list
+    size_map = {}
+    # solver * category -> time list
+    time_map = {}
+
+    # solver -> # fastest bench
+    fastest = {}
+
+    for s in solvers:
+        for c in categories:
+            fastest[(s, c)] = 0
+            size_map[(s, c)] = []
+            time_map[(s, c)] = []
+
+    for s in solvers:
+        for c in categories:
+            for b in benchmarks:
+                args.cmd = c
+                if already_done(args, b, s):
+                    size_map[(s, c)].append(count_ast(args, b, s))
+                    time_map[(s, c)].append(count_time(c, b, s))
+                else:
+                    size_map[(s, c)].append(-1)
+                    time_map[(s, c)].append(3600.0)
+
+    # compute num of fastest solved benchmarks
+    for c in categories:
+        for i in range(0, len(time_map[('duet', c)])):
+            min_time = min([time_map[(s, c)][i] for s in solvers])
+            if min_time == 3600.0: continue
+
+            if min_time == time_map[('duet', c)][i]:
+                fastest[('duet', c)] = fastest[('duet', c)] + 1
+            else: # euphony
+                fastest[('euphony', c)] = fastest[('euphony', c)] + 1
+
+    # remove results of timeout
+
+    for s in solvers:
+        for c in categories:
+            size_map[(s, c)] = [s for s in size_map[(s, c)] if s != -1]
+            time_map[(s, c)] = [t for t in time_map[(s, c)] if t != 3600.0]
+
+    print("# Solved Benchmarks" )
+    print("-" * 120)
+    print("%8s %8s %8s %8s" % ("Domain", "Total", "Duet", "Euphony") )
+    for c in categories:
+        print("%8s %8d %8d %8d" % (c,
+                                   len(string_benchmarks) if c == 'string' else len(
+                                       bitvec_benchmarks) if c == 'bitvec' else len(circuit_benchmarks),
+                                   len([s for s in size_map[('duet', c)] if s != -1]),
+                                   len([s for s in size_map[('euphony', c)] if s != -1])))
+    print("-" * 120)
+
+    print("# Fastest Benchmarks" )
+    print("-" * 120)
+    print("%8s %8s %8s" % ("Domain", "Duet", "Euphony"))
+    for c in categories:
+        print("%8s %8d %8d" % (c, fastest[('duet', c)], fastest[('euphony', c)]))
+    print("-" * 120)
+
+
+
+    print("Synthesis Time (average, median)")
+    print("-" * 120)
+    print("%8s %17s %17s" % ("Domain", "Duet", "Euphony"))
+    for c in categories:
+        print("%8s %8s %8s %8s %8s" % (c,
+                                               mean_str(time_map[('duet', c)]),
+                                               median_str(time_map[('duet', c)]),
+                                               mean_str(time_map[('euphony', c)]),
+                                               median_str(time_map[('euphony', c)])
+                                               ))
+    print("-" * 120)
+
+    print("Solution Size (average, median)")
+    print("-" * 120)
+    print("%8s %17s %17s" % ("Domain", "Duet", "Euphony"))
+    for c in categories:
+        print("%8s %8s %8s %8s %8s" % (c,
+                                               mean_str(size_map[('duet', c)]),
+                                               median_str(size_map[('duet', c)]),
+                                               mean_str(size_map[('euphony', c)]),
+                                               median_str(size_map[('euphony', c)])
+                                               ))
+    print("-" * 120)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
+
+    parser.add_argument('--print_stat', type=int, default=0, help="Print statistics (1: vs. EUSolver and CVC4, 2: vs. Euphony)")
+
     subparsers = parser.add_subparsers(dest="cmd")
     subparser = subparsers.add_parser("string", help="Run the String Benchmark Programs")
-    subparser.add_argument("--timeout", type = int, default = 3600)
-    subparser.add_argument("--memory", type = int, default = 8)
+    subparser.add_argument("--timeout", type=int, default=3600)
+    subparser.add_argument("--memory", type=int, default=8)
+    subparser.add_argument('--n_process', type=int, default=4)
+    subparser.add_argument('--batch', action="store_true", default = False)
     subparser.add_argument("--only_duet", action="store_true", default = False)
+
     subparser = subparsers.add_parser("bitvec", help="Run the Bitvec Benchmark Programs")
-    subparser.add_argument("--timeout", type = int, default = 3600)
-    subparser.add_argument("--memory", type = int, default = 8)
-    subparser.add_argument("--only_duet", action="store_true", default = False)
+    subparser.add_argument("--timeout", type=int, default=3600)
+    subparser.add_argument("--memory", type=int, default=8)
+    subparser.add_argument('--n_process', type=int, default=4)
+    subparser.add_argument('--batch', action="store_true", default=False)
+    subparser.add_argument("--only_duet", action="store_true", default=False)
+
     subparser = subparsers.add_parser("circuit", help="Run the Circuit Benchmark Programs")
-    subparser.add_argument("--timeout", type = int, default = 3600)
-    subparser.add_argument("--memory", type = int, default = 8)
-    subparser.add_argument("--only_duet", action="store_true", default = False)
+    subparser.add_argument("--timeout", type=int, default=3600)
+    subparser.add_argument("--memory", type=int, default=8)
+    subparser.add_argument('--n_process', type=int, default=4)
+    subparser.add_argument('--batch', action="store_true", default=False)
+    subparser.add_argument("--only_duet", action="store_true", default=False)
     return parser.parse_args()
 
 def main():
     args = parse_args()
-    logger = logging.getLogger('logger')
-    formatter = logging.Formatter('[%(levelname)s] %(asctime)s > %(message)s')
-    fileHandler = logging.FileHandler('./log')
-    streamHandler = logging.StreamHandler()
-    fileHandler.setFormatter(formatter)
-    streamHandler.setFormatter(formatter)
-    logger.addHandler(fileHandler)
-    logger.addHandler(streamHandler)
-    logger.setLevel(logging.DEBUG)
+    # logger = logging.getLogger('logger')
+    # formatter = logging.Formatter('[%(levelname)s] %(asctime)s > %(message)s')
+    # fileHandler = logging.FileHandler('./log')
+    # streamHandler = logging.StreamHandler()
+    # fileHandler.setFormatter(formatter)
+    # streamHandler.setFormatter(formatter)
+    # logger.addHandler(fileHandler)
+    # logger.addHandler(streamHandler)
+    # logger.setLevel(logging.DEBUG)
 
-    if args.cmd in [ "string", "bitvec", "circuit"]:
-        run(args, logger)
+    if args.print_stat == 1:
+        print_stat(args)
+    elif args.print_stat == 2:
+        print_stat_euphony(args)
     else:
-        print("Invalid Argument")
+        if args.cmd in [ "string", "bitvec", "circuit"]:
+            if args.batch: run_batch(args)
+            else: run(args)
+        else:
+            print("Invalid Argument")
 
 if __name__ == "__main__":
     main()
