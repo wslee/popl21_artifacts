@@ -30,7 +30,7 @@ You can also obtain the results of Duet without running the other baseline solve
 ```sh
 $ ./artifact <domain> --only_duet [--timeout <sec> (default: 3600) [--memory <GB> (default: 16)]
 ```
-where <domain> can be one of string, bitvec, circuit. 
+where "domain" can be one of string, bitvec, circuit. 
   
 ## Comparison to Euphony (Table 3 in the paper)
 You should run the commands for the main results first.  And then, please execute
